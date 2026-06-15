@@ -1,1 +1,284 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Entropy Diver — Prototype</title>
+  <style>
+    :root{--bg:#0b0f14;--panel:#0f1720;--accent:#69d2ff;--danger:#ff6b6b}
+    html,body{height:100%;margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,Arial;background:linear-gradient(180deg,#061018 0%, #09121a 100%);color:#dbeafe}
+    header{padding:16px;background:rgba(0,0,0,0.2);backdrop-filter:blur(6px);display:flex;align-items:center;gap:16px}
+    header h1{margin:0;font-size:18px}
+    #game-wrap{display:flex;gap:16px;padding:16px}
+    #viewport{background:var(--panel);border-radius:8px;padding:8px;flex:1;display:flex;flex-direction:column;align-items:center}
+    canvas{background:linear-gradient(180deg,#071523,#08121a);border-radius:6px;display:block}
+    #hud{width:320px;min-width:280px}
+    .panel{background:rgba(2,6,23,0.6);padding:12px;border-radius:8px}
+    .ability{display:flex;justify-content:space-between;margin-top:8px}
+    .ability > div{flex:1}
+    footer{padding:12px;text-align:center;font-size:13px;color:#9fb6c8}
+    .controls{font-size:13px;color:#9fb6c8;margin-top:8px}
+    .small{font-size:12px;color:#9fb6c8}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Entropy Diver — Prototype</h1>
+    <div class="small">Third-person thermodynamic action — basic web prototype</div>
+  </header>
 
+  <div id="game-wrap">
+    <div id="viewport" class="panel">
+      <canvas id="gameCanvas" width="960" height="600"></canvas>
+      <div class="controls small">WASD: move • Mouse: aim • Q: Flash-freeze • E: Kinetic Redirect (dash) • R: Ambient Heat</div>
+    </div>
+
+    <aside id="hud">
+      <div class="panel">
+        <h3>Player</h3>
+        <div id="stats">
+          <div>Health: <span id="health">100</span></div>
+          <div>Armor: <span id="armor">50</span></div>
+          <div>Energy: <span id="energy">100</span></div>
+        </div>
+
+        <h4 style="margin-top:12px">Abilities</h4>
+        <div class="ability"><div>Q — Flash-freeze</div><div id="cd-q">Ready</div></div>
+        <div class="ability"><div>E — Kinetic Redirect</div><div id="cd-e">Ready</div></div>
+        <div class="ability"><div>R — Ambient Heat</div><div id="cd-r">Ready</div></div>
+
+        <h4 style="margin-top:12px">Notes</h4>
+        <div class="small">This is a skeleton. Replace the empty image sources (below) with your art files; the game will load them when available.</div>
+
+        <h4 style="margin-top:12px">Image placeholders</h4>
+        <!-- Empty src elements for you to replace with art -->
+        <img id="img-player" src="" alt="player sprite" style="display:none" />
+        <img id="img-enemy" src="" alt="enemy sprite" style="display:none" />
+        <img id="img-environment" src="" alt="environment tile" style="display:none" />
+        <img id="img-effect-freeze" src="" alt="freeze effect" style="display:none" />
+        <img id="img-effect-heat" src="" alt="heat effect" style="display:none" />
+
+      </div>
+    </aside>
+  </div>
+
+  <footer class="small">Concept: Entropy Diver — gameplay mechanics prototype. Art placeholders included.</footer>
+
+  <script>
+    // Basic game prototype: player, simple enemies, and three abilities.
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const W = canvas.width, H = canvas.height;
+
+    // Image placeholders (user will provide assets by filling src attributes)
+    const IMG = {
+      player: document.getElementById('img-player'),
+      enemy: document.getElementById('img-enemy'),
+      env: document.getElementById('img-environment'),
+      fxFreeze: document.getElementById('img-effect-freeze'),
+      fxHeat: document.getElementById('img-effect-heat')
+    };
+
+    function hasImage(img){ return img && img.src && img.complete && img.naturalWidth>0; }
+
+    // Player
+    const player = {
+      x: W/2, y: H/2, r: 18, angle: 0,
+      speed: 160, health:100, armor:50, energy:100
+    };
+
+    // Abilities: cooldowns in seconds
+    const abilities = {
+      q: {name:'flash-freeze', cd:6, last: -999, cost:25},
+      e: {name:'kinetic-redirect', cd:4, last: -999, cost:20},
+      r: {name:'ambient-heat', cd:8, last: -999, cost:30}
+    };
+
+    // Enemies
+    const enemies = [];
+    function spawnEnemy(){
+      const side = Math.floor(Math.random()*4);
+      let x=0,y=0;
+      if(side===0){ x = Math.random()*W; y = -40; }
+      if(side===1){ x = Math.random()*W; y = H+40; }
+      if(side===2){ x = -40; y = Math.random()*H; }
+      if(side===3){ x = W+40; y = Math.random()*H; }
+      enemies.push({x,y,vx:0,vy:0,r:14, speed:40, armor:30, frozenUntil:0});
+    }
+
+    for(let i=0;i<5;i++) spawnEnemy();
+
+    // Input
+    const keys = {};
+    let mouse = {x:W/2,y:H/2,down:false};
+    window.addEventListener('keydown',e=>{ keys[e.key.toLowerCase()]=true; if(e.key===' ') e.preventDefault(); });
+    window.addEventListener('keyup',e=>{ keys[e.key.toLowerCase()]=false; });
+    canvas.addEventListener('mousemove',e=>{ const rect=canvas.getBoundingClientRect(); mouse.x=(e.clientX-rect.left); mouse.y=(e.clientY-rect.top); });
+    canvas.addEventListener('mousedown',e=>{ mouse.down=true; });
+    canvas.addEventListener('mouseup',e=>{ mouse.down=false; });
+
+    // Utilities
+    function now(){ return performance.now()/1000; }
+    function clamp(v,a,b){ return Math.max(a,Math.min(b,v)); }
+    function dist(a,b){ const dx=a.x-b.x, dy=a.y-b.y; return Math.hypot(dx,dy); }
+
+    // Ability logic
+    function useQ(){ // flash-freeze: reduce armor of enemies in cone
+      const t = now(); const ab = abilities.q;
+      if(t - ab.last < ab.cd) return false;
+      if(player.energy < ab.cost) return false;
+      ab.last = t; player.energy -= ab.cost;
+      // freeze cone in front of player
+      enemies.forEach(e=>{
+        const dx = e.x - player.x, dy = e.y - player.y;
+        const a = Math.atan2(dy,dx);
+        const da = Math.abs((a - player.angle + Math.PI) % (Math.PI*2) - Math.PI);
+        const d = Math.hypot(dx,dy);
+        if(da < Math.PI/4 && d < 220){ e.armor = Math.max(0, e.armor - 25); e.frozenUntil = now()+2; }
+      });
+      return true;
+    }
+
+    function useE(){ // kinetic redirect: dash that knocks enemies
+      const t = now(); const ab = abilities.e;
+      if(t - ab.last < ab.cd) return false;
+      if(player.energy < ab.cost) return false;
+      ab.last = t; player.energy -= ab.cost;
+      // dash forward
+      const dash = 160;
+      player.x += Math.cos(player.angle)*dash;
+      player.y += Math.sin(player.angle)*dash;
+      // knock nearby enemies
+      enemies.forEach(e=>{
+        const d = Math.hypot(e.x-player.x,e.y-player.y);
+        if(d < 120){ e.vx += (e.x-player.x)/d * 240; e.vy += (e.y-player.y)/d * 240; e.armor -= 15; }
+      });
+      return true;
+    }
+
+    function useR(){ // ambient heat: damage environment to create melt-trap (here, damages enemies over time)
+      const t = now(); const ab = abilities.r;
+      if(t - ab.last < ab.cd) return false;
+      if(player.energy < ab.cost) return false;
+      ab.last = t; player.energy -= ab.cost;
+      // apply a heat field around player for a short time
+      enemies.forEach(e=>{ const d=Math.hypot(e.x-player.x,e.y-player.y); if(d<200) e.armor = Math.max(0, e.armor - 18); });
+      return true;
+    }
+
+    // Game loop
+    let lastT = now();
+    function update(){
+      const t = now(); const dt = clamp(t - lastT, 0, 0.05); lastT = t;
+
+      // Player rotation
+      player.angle = Math.atan2(mouse.y - player.y, mouse.x - player.x);
+
+      // Movement
+      let mx=0,my=0; if(keys['w']) my-=1; if(keys['s']) my+=1; if(keys['a']) mx-=1; if(keys['d']) mx+=1;
+      const mlen = Math.hypot(mx,my) || 1; player.x += (mx/mlen) * player.speed * dt; player.y += (my/mlen) * player.speed * dt;
+      player.x = clamp(player.x, 20, W-20); player.y = clamp(player.y, 20, H-20);
+
+      // Use abilities
+      if(keys['q']){ if(useQ()) keys['q']=false; }
+      if(keys['e']){ if(useE()) keys['e']=false; }
+      if(keys['r']){ if(useR()) keys['r']=false; }
+
+      // Regenerate energy slowly
+      player.energy = clamp(player.energy + 10*dt, 0, 100);
+
+      // Enemy AI
+      enemies.forEach(e=>{
+        // simple movement toward player, unless recently knocked
+        const d = Math.hypot(player.x-e.x, player.y-e.y);
+        if(d>1){ const ax=(player.x-e.x)/d, ay=(player.y-e.y)/d; e.vx += ax * e.speed * 0.02; e.vy += ay * e.speed * 0.02; }
+        // damping
+        e.vx *= 0.96; e.vy *= 0.96;
+        e.x += e.vx*dt; e.y += e.vy*dt;
+        // if frozen, slow them
+        if(e.frozenUntil > now()){ e.vx *= 0.7; e.vy *= 0.7; }
+        // collision with player
+        if(Math.hypot(e.x-player.x,e.y-player.y) < e.r + player.r){ player.health -= 8*dt; }
+        // remove dead enemies
+        if(e.armor <= 0){ e.hitByHeat = now(); }
+      });
+
+      // cleanup dead enemies after effects
+      for(let i=enemies.length-1;i>=0;i--){ if(enemies[i].hitByHeat && now() - enemies[i].hitByHeat > 0.6) enemies.splice(i,1); }
+      // spawn occasionally
+      if(Math.random() < 0.01) spawnEnemy();
+
+      // update HUD
+      document.getElementById('health').textContent = Math.floor(player.health);
+      document.getElementById('armor').textContent = Math.floor(player.armor);
+      document.getElementById('energy').textContent = Math.floor(player.energy);
+
+      // CD labels
+      ['q','e','r'].forEach(k=>{
+        const ab = abilities[k]; const el = document.getElementById('cd-'+k);
+        const rem = Math.max(0, Math.round((ab.cd - (now()-ab.last))*10)/10);
+        el.textContent = (rem>0? (rem+'s') : 'Ready');
+      });
+    }
+
+    function draw(){
+      // clear
+      ctx.clearRect(0,0,W,H);
+
+      // environment tile pattern using env img if present
+      if(hasImage(IMG.env)){
+        const img = IMG.env;
+        for(let y=0;y<H;y+=img.height){ for(let x=0;x<W;x+=img.width) ctx.drawImage(img,x,y, img.width, img.height); }
+      } else {
+        // fallback grid
+        ctx.fillStyle = '#06121a'; ctx.fillRect(0,0,W,H);
+        ctx.strokeStyle = 'rgba(255,255,255,0.03)'; ctx.lineWidth = 1;
+        for(let x=0;x<W;x+=48){ ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,H); ctx.stroke(); }
+        for(let y=0;y<H;y+=48){ ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke(); }
+      }
+
+      // draw enemies
+      enemies.forEach(e=>{
+        ctx.save(); ctx.translate(e.x,e.y);
+        // draw freeze effect if frozen
+        if(e.frozenUntil > now()){
+          if(hasImage(IMG.fxFreeze)) ctx.drawImage(IMG.fxFreeze, -32, -32, 64,64);
+          else { ctx.fillStyle='rgba(150,220,255,0.25)'; ctx.beginPath(); ctx.arc(0,0,e.r+6,0,Math.PI*2); ctx.fill(); }
+        }
+        if(e.hitByHeat){ // dying effect
+          if(hasImage(IMG.fxHeat)) ctx.drawImage(IMG.fxHeat, -28, -28, 56,56);
+          ctx.globalAlpha = 1 - (now()-e.hitByHeat)/0.6;
+        }
+        if(hasImage(IMG.enemy)) ctx.drawImage(IMG.enemy, -e.r, -e.r, e.r*2, e.r*2);
+        else { ctx.fillStyle='#ffb86b'; ctx.beginPath(); ctx.arc(0,0,e.r,0,Math.PI*2); ctx.fill(); }
+        // armor bar
+        ctx.restore();
+        ctx.fillStyle='rgba(0,0,0,0.6)'; ctx.fillRect(e.x-18, e.y - e.r - 12, 36,6);
+        ctx.fillStyle='#00d1ff'; ctx.fillRect(e.x-18, e.y - e.r - 12, 36*clamp(e.armor/40,0,1),6);
+      });
+
+      // draw player
+      ctx.save(); ctx.translate(player.x, player.y); ctx.rotate(player.angle);
+      if(hasImage(IMG.player)) ctx.drawImage(IMG.player, -player.r, -player.r, player.r*2, player.r*2);
+      else {
+        // fallback: circle + cone
+        ctx.fillStyle='#69d2ff'; ctx.beginPath(); ctx.arc(0,0,player.r,0,Math.PI*2); ctx.fill();
+        ctx.fillStyle='rgba(150,220,255,0.12)'; ctx.beginPath(); ctx.moveTo(0,0); ctx.arc(0,0,130,-0.35,0.35); ctx.closePath(); ctx.fill();
+      }
+      ctx.restore();
+
+      // HUD overlay
+      ctx.fillStyle='rgba(0,0,0,0.2)'; ctx.fillRect(8,8,220,48);
+      ctx.fillStyle='#9fb6c8'; ctx.font='14px Inter, system-ui'; ctx.fillText('Entropy Diver — Prototype',16,28);
+    }
+
+    function loop(){ update(); draw(); requestAnimationFrame(loop); }
+    loop();
+
+    // expose simple debug
+    window.__entropy = {player, enemies, abilities};
+
+    // Simple save/load for testing art URLs: open console and set image.src to a URL, or replace <img> src attributes.
+  </script>
+</body>
+</html>
